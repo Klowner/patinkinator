@@ -53,7 +53,9 @@ def process_video(videopath):
                 cv2.rectangle(frame, (left, top), (right, bottom), (0, 0, 255), 2)
 
                 # log: frame, top, right, bottom, left
-                logfile.write('\t'.join([str(x) for x in [frame_no, top, right, bottom, left]]) + '\n')
+                output = '\t'.join([str(x) for x in [frame_no, top, right, bottom, left])
+                logfile.write(output + '\n')
+                print(output)
 
             # cv2.imshow('frame', frame)
             # if cv2.waitKey(1) & 0xff == ord('q'):
