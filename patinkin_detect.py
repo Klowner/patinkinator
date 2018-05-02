@@ -12,6 +12,7 @@ def load_patinkin_encodings():
         encoding = face_recognition.face_encodings(image)[0]
         yield encoding
 
+
 def process_video(videopath):
     cap = cv2.VideoCapture(videopath)
     patinkin_encodings = list(load_patinkin_encodings())
@@ -26,14 +27,17 @@ def process_video(videopath):
         cap.get(cv2.CAP_PROP_FRAME_HEIGHT),
     ]) + '\n')
 
-    skip_frames = 2200
+    skip_frames = 0
     frame_no = -1
+
     while cap.isOpened():
 
         matched_location = None
 
         frame_no += 1
         ret, frame = cap.read()
+        if not ret:
+            break
 
         if skip_frames == 0:
             small_frame = cv2.resize(frame, (0, 0), fx=0.25, fy=0.25)
@@ -67,7 +71,6 @@ def process_video(videopath):
     cv2.destroyAllWindows()
 
 if __name__ == '__main__':
-    print(sys.argv)
     if len(sys.argv) < 2:
         print('usage: {} <videofile, ...>'.format(sys.argv[0]))
 
