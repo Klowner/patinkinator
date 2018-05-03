@@ -7,7 +7,8 @@ import sys
 
 
 def load_patinkin_encodings():
-    for filename in glob.glob('patinkins/*'):
+    pwd = os.path.dirname(os.path.realpath(__file__))
+    for filename in glob.glob(pwd + '/patinkins/*'):
         image = face_recognition.load_image_file(filename)
         encoding = face_recognition.face_encodings(image)[0]
         yield encoding

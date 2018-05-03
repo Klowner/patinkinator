@@ -1,7 +1,9 @@
 #!/bin/env python3
 import os.path
 import sys
-
+from hashlib import md5
+import subprocess
+import shlex
 
 def midpoint(a, b):
     elems = [a, b]
@@ -12,17 +14,18 @@ def midpoint(a, b):
 
 class Rectangle:
     def __init__(self, x_min, y_min, x_max, y_max):
-        self.x_min = x_min # left
-        self.y_min = y_min # top
-        self.x_max = x_max # right
-        self.y_max = y_max # bottom
+        self.x_min = x_min  # left
+        self.y_min = y_min  # top
+        self.x_max = x_max  # right
+        self.y_max = y_max  # bottom
 
     def __repr__(self):
-        return '<Rectangle ({}, {}) ({}, {})>'.format(
+        return '<Rectangle ({}, {}) ({}, {}) = {}>'.format(
                 self.x_min,
                 self.y_min,
                 self.x_max,
                 self.y_max,
+                self.size,
                 )
 
     @property
@@ -40,7 +43,7 @@ class Rectangle:
     @property
     def center_to_top_left(self):
         (cx, cy) = self.center
-        return (cx - self.x_min, cy - self.y_min)
+        return (self.x_min - cx, self.y_min - cy)
 
     def scale_from_center(self, w=1.0, h=None):
         (cx, cy) = self.center
@@ -56,8 +59,8 @@ class Rectangle:
         tl_y *= h_amount
         br_y *= h_amount
 
-        x_min = cx - tl_x
-        y_min = cy - tl_y
+        x_min = cx + tl_x
+        y_min = cy + tl_y
         x_max = cx + br_x
         y_max = cy + br_y
 
@@ -65,10 +68,10 @@ class Rectangle:
 
     def clip_to(self, patinkin_data):
         x, y = patinkin_data.width, patinkin_data.height
-        y_min = self.y_min if self.y_min > 0 else 0
         x_min = self.x_min if self.x_min > 0 else 0
-        y_max = self.y_max if self.y_max < x else x
-        x_max = self.x_max if self.x_max < y else y
+        y_min = self.y_min if self.y_min > 0 else 0
+        x_max = self.x_max if self.x_max < x else x
+        y_max = self.y_max if self.y_max < y else y
         return Rectangle(x_min, y_min, x_max, y_max)
 
     def round(self):
@@ -76,27 +79,33 @@ class Rectangle:
         return Rectangle(*[round(x) for x in elems])
 
     @property
-    def x(self): return self.x_min
+    def x(self):
+        return self.x_min
 
     @property
-    def y(self): return self.y_min
+    def y(self):
+        return self.y_min
 
     @property
     def w(self):
         return self.x_max - self.x_min
 
     @property
-    def h(self): return self.y_max - self.y_min
+    def h(self):
+        return self.y_max - self.y_min
 
     @property
     def as_ffmpeg_crop(self):
-        return "crop={}:{}:{}:{}".format(
+        return '-filter:v "crop={}:{}:{}:{}"'.format(
                 self.w,
                 self.h,
                 self.x,
                 self.y,
                 )
 
+    @property
+    def size(self):
+        return (self.w, self.h)
 
 class PatinkinDetection:
     def __init__(self, frame, top, right, bottom, left):
@@ -144,6 +153,16 @@ class PatinkinDetectionGroup:
     @property
     def frame_end(self):
         return self.detections[-1].frame
+
+    @property
+    def frames(self):
+        return self.frame_end - self.frame_start
+
+    def as_ffmpeg_seek(self, pad_seconds=0):
+        secs = self.time_start_seconds - pad_seconds
+        m, s = divmod(secs, 60)
+        h, m = divmod(m, 60)
+        return "-ss %02d:%02d:%f" % (h, m, s)
 
     @property
     def time_start_seconds(self):
@@ -242,17 +261,60 @@ class PatinkinData:
         if detection_group:
             yield PatinkinDetectionGroup(self, detection_group)
 
+    def extract(self, group, rect, pad_secs,
+            tmpl="ffmpeg -y {seek} -i {in} -frames:v {frames} {crop} {scale} -c:v libvpx-vp9 -lossless 1 {out}.webm"):
+        pad_frames = int(pad_secs * self.fps)
+        seek = group.as_ffmpeg_seek(pad_secs)
+        crop = rect.as_ffmpeg_crop
 
-def process_variants(data, max_gaps=[0], scales=[(1.0, 1.0)]):
+        h = md5()
+        h.update(self.video_path.encode('utf-8'))
+        h.update(''.join([str(x) for x in rect.size]).encode('utf-8'))
+        h.update(''.join([str(x) for x in [group.frame_start, group.frame_end]]).encode('utf-8'))
+        out_hash = h.hexdigest()[:8]
+
+
+        out_name = '_'.join([str(x) for x in [
+            "%06x" % (group.frame_start - pad_frames),
+            "%04d" % (group.frames + pad_frames*2),
+            out_hash,
+            ]])
+
+        out_name = './out/{}'.format(out_name)
+
+        # constrain max width/height but keep aspect ratio
+        max_dim = 800.0
+        w, h = rect.size
+        s = min(max_dim / w, max_dim / h)
+        scale = '-vf "scale=w={}:h={}" '.format(int(w * s), int(h * s))
+
+        ffmpeg_command = tmpl.format(**{
+            'seek': seek,
+            'crop': crop,
+            'in': os.path.abspath(self.video_path),
+            'out': out_name,
+            'frames': int(group.frames + (pad_frames*2)),
+            'scale': scale,
+            })
+
+        # print(w, h, scale)
+        # print(ffmpeg_command)
+        subprocess.run(shlex.split(ffmpeg_command))
+        # subprocess.run(['ffmpeg', ffmpeg_command])
+
+
+
+def process_variants(data, max_gaps=[0], scales=[(1.0, 1.0)], pads=[0]):
     for gap in max_gaps:
-        for group in data.grouped(gap):
-            for scale in scales:
-                xs, xy = (scale + scale)[:2]
-                rect = group.coverage_rectangle
-                rect = rect.scale_from_center(xs, xy)
-                rect = rect.clip_to(data)
-                rect = rect.round()
-                print(rect.as_ffmpeg_crop)
+        for i, group in enumerate(data.grouped(gap)):
+            for pad in pads:
+                for scale in scales:
+                    xs, xy = (scale + scale)[:2]
+                    rect = group.coverage_rectangle
+                    rect = rect.scale_from_center(xs, xy)
+                    rect = rect.clip_to(data)
+                    rect = rect.round()
+                    pd.extract(group, rect, pad)
 
 
 if __name__ == '__main__':
@@ -264,13 +326,26 @@ if __name__ == '__main__':
 
     for (vp, tp) in path_pairs:
         pd = PatinkinData(vp, tp)
-        process_variants(pd, max_gaps=[0, 2, 8], scales=[
-            (1.0,),
-            # (2.0,),
-            # (8.0,),
-            # (1.3, 10.0),
-        ])
 
+        max_gaps = [
+                0.5,
+                2.0,
+        ]
+
+        scales = [
+                (1.4, 3.0),
+                (3.0, 1.4),
+                (2.0, 1.8),
+                (3.0,),
+                (8.0,),
+        ]
+
+        pads = [
+                0.16,
+                1.0,
+        ]
+
+        process_variants(pd, max_gaps, scales, pads)
         # for grp in pd.grouped(8):
         #     print(
         #             grp.seconds,
