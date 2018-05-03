@@ -20,6 +20,8 @@ def process_video(videopath):
 
     logfile = open(os.path.splitext(videopath)[0] + '.tsv', 'w')
     video_fps = int(cap.get(cv2.CAP_PROP_FPS))
+    video_width = cap.get(cv2.CAP_PROP_FRAME_WIDTH)
+    video_height = cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
 
     # log: fps, width, height
     logfile.write('\t'.join(str(int(x)) for x in [
@@ -41,7 +43,9 @@ def process_video(videopath):
             break
 
         if skip_frames == 0:
-            small_frame = cv2.resize(frame, (0, 0), fx=0.25, fy=0.25)
+            scale_max = 300.0
+            scale_by = min(1.0, min(scale_max / video_width, scale_max / video_height))
+            small_frame = cv2.resize(frame, (0, 0), fx=scale_by, fy=scale_by)
             face_locations = face_recognition.face_locations(small_frame)
             face_encodings = face_recognition.face_encodings(small_frame, face_locations)
 
@@ -53,8 +57,9 @@ def process_video(videopath):
                 else:
                     skip_frames = 2
 
+
             if matched_location:
-                (top, right, bottom, left) = [x*4 for x in matched_location]
+                (top, right, bottom, left) = [int(x * (1.0/scale_by)) for x in matched_location]
                 cv2.rectangle(frame, (left, top), (right, bottom), (0, 0, 255), 2)
 
                 # log: frame, top, right, bottom, left
@@ -62,9 +67,15 @@ def process_video(videopath):
                 logfile.write(output + '\n')
                 print(output)
 
-            # cv2.imshow('frame', frame)
-            # if cv2.waitKey(1) & 0xff == ord('q'):
-            #     break
+            show = False
+            if show:
+                for fl in face_locations:
+                    (top, right, bottom, left) = [int(x * (1.0/scale_by)) for x in fl]
+                    cv2.rectangle(frame, (left, top), (right, bottom), (0, 255, 0), 2)
+
+                cv2.imshow('frame', frame)
+                if cv2.waitKey(1) & 0xff == ord('q'):
+                    break
 
         skip_frames = skip_frames - 1 if skip_frames > 0 else 0
     logfile.close()
