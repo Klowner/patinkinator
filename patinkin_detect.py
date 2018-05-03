@@ -67,7 +67,7 @@ def process_video(videopath):
                 logfile.write(output + '\n')
                 print(output)
 
-            show = False
+            show = True
             if show:
                 for fl in face_locations:
                     (top, right, bottom, left) = [int(x * (1.0/scale_by)) for x in fl]

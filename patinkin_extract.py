@@ -96,7 +96,7 @@ class Rectangle:
 
     @property
     def as_ffmpeg_crop(self):
-        return '-filter:v "crop={}:{}:{}:{}"'.format(
+        return 'crop={}:{}:{}:{}'.format(
                 self.w,
                 self.h,
                 self.x,
@@ -262,7 +262,7 @@ class PatinkinData:
             yield PatinkinDetectionGroup(self, detection_group)
 
     def extract(self, group, rect, pad_secs,
-            tmpl="ffmpeg -y {seek} -i {in} -frames:v {frames} {crop} {scale} -c:v libvpx-vp9 -lossless 1 {out}.webm"):
+            tmpl="ffmpeg -y {seek} -i {in} -frames:v {frames} -filter:v \"{crop},{scale}\" -c:v libvpx-vp9 -lossless 1 {out}.webm"):
         pad_frames = int(pad_secs * self.fps)
         seek = group.as_ffmpeg_seek(pad_secs)
         crop = rect.as_ffmpeg_crop
@@ -286,7 +286,7 @@ class PatinkinData:
         max_dim = 800.0
         w, h = rect.size
         s = min(max_dim / w, max_dim / h)
-        scale = '-vf "scale=w={}:h={}" '.format(int(w * s), int(h * s))
+        scale = 'scale=w={}:h={}'.format(int(w * s), int(h * s))
 
         ffmpeg_command = tmpl.format(**{
             'seek': seek,
@@ -298,7 +298,7 @@ class PatinkinData:
             })
 
         # print(w, h, scale)
-        # print(ffmpeg_command)
+        print(ffmpeg_command)
         subprocess.run(shlex.split(ffmpeg_command))
         # subprocess.run(['ffmpeg', ffmpeg_command])
 
@@ -341,6 +341,7 @@ if __name__ == '__main__':
         ]
 
         pads = [
+                0,
                 0.16,
                 1.0,
         ]
