@@ -11,11 +11,11 @@ def midpoint(a, b):
 
 
 class Rectangle:
-    def __init__(self, top, right, bottom, left):
-        self.y_min = top
-        self.y_max = bottom
-        self.x_min = left
-        self.x_max = right
+    def __init__(self, x_min, y_min, x_max, y_max):
+        self.x_min = x_min # left
+        self.y_min = y_min # top
+        self.x_max = x_max # right
+        self.y_max = y_max # bottom
 
     def __repr__(self):
         return '<Rectangle ({}, {}) ({}, {})>'.format(
@@ -61,7 +61,7 @@ class Rectangle:
         x_max = cx + br_x
         y_max = cy + br_y
 
-        return Rectangle(y_min, x_max, y_max, x_min)
+        return Rectangle(x_min, y_min, x_max, y_max)
 
     def clip_to(self, patinkin_data):
         x, y = patinkin_data.width, patinkin_data.height
@@ -69,11 +69,10 @@ class Rectangle:
         x_min = self.x_min if self.x_min > 0 else 0
         y_max = self.y_max if self.y_max < x else x
         x_max = self.x_max if self.x_max < y else y
-
-        return Rectangle(y_min, x_max, y_max, x_min)
+        return Rectangle(x_min, y_min, x_max, y_max)
 
     def round(self):
-        elems = [self.y_min, self.x_max, self.y_max, self.x_min]
+        elems = [self.x_min, self.y_min, self.x_max, self.y_max]
         return Rectangle(*[round(x) for x in elems])
 
     @property
@@ -83,15 +82,26 @@ class Rectangle:
     def y(self): return self.y_min
 
     @property
-    def w(self): return self.x_max - self.x_min
+    def w(self):
+        return self.x_max - self.x_min
 
     @property
     def h(self): return self.y_max - self.y_min
 
+    @property
+    def as_ffmpeg_crop(self):
+        return "crop={}:{}:{}:{}".format(
+                self.w,
+                self.h,
+                self.x,
+                self.y,
+                )
+
+
 class PatinkinDetection:
     def __init__(self, frame, top, right, bottom, left):
         self.frame = frame
-        self.rect = Rectangle(top, right, bottom, left)
+        self.rect = Rectangle(left, top, right, bottom)
 
         self.top = top
         self.right = right
@@ -193,10 +203,10 @@ class PatinkinDetectionGroup:
     @property
     def coverage_rectangle(self):
         return Rectangle(
+            self.min_x,
             self.min_y,
             self.max_x,
             self.max_y,
-            self.min_x
         )
 
 
@@ -233,6 +243,18 @@ class PatinkinData:
             yield PatinkinDetectionGroup(self, detection_group)
 
 
+def process_variants(data, max_gaps=[0], scales=[(1.0, 1.0)]):
+    for gap in max_gaps:
+        for group in data.grouped(gap):
+            for scale in scales:
+                xs, xy = (scale + scale)[:2]
+                rect = group.coverage_rectangle
+                rect = rect.scale_from_center(xs, xy)
+                rect = rect.clip_to(data)
+                rect = rect.round()
+                print(rect.as_ffmpeg_crop)
+
+
 if __name__ == '__main__':
     if len(sys.argv) < 2:
         print('usage: {} <videofile, ...>')
@@ -242,18 +264,25 @@ if __name__ == '__main__':
 
     for (vp, tp) in path_pairs:
         pd = PatinkinData(vp, tp)
-        for grp in pd.grouped(8):
-            print(
-                    grp.seconds,
-                    grp.time_start_seconds,
-                    grp.time_end_seconds,
-                    '\n',
-                    grp.coverage_rectangle.scale_from_center(0.25).clip_to(pd).round(),
-                    grp.coverage_rectangle.scale_from_center(8.0).clip_to(pd).round(),
-                    grp.coverage_rectangle.scale_from_center(2.0, 0.5).clip_to(pd).round(),
-                    grp.coverage_rectangle.clip_to(pd).round(),
-                    pd.width,
-                    pd.height,
-                    '\n'
-                    )
+        process_variants(pd, max_gaps=[0, 2, 8], scales=[
+            (1.0,),
+            # (2.0,),
+            # (8.0,),
+            # (1.3, 10.0),
+        ])
+
+        # for grp in pd.grouped(8):
+        #     print(
+        #             grp.seconds,
+        #             grp.time_start_seconds,
+        #             grp.time_end_seconds,
+        #             '\n',
+        #             grp.coverage_rectangle.scale_from_center(0.25).clip_to(pd).round(),
+        #             grp.coverage_rectangle.scale_from_center(8.0).clip_to(pd).round(),
+        #             grp.coverage_rectangle.scale_from_center(2.0, 0.5).clip_to(pd).round(),
+        #             grp.coverage_rectangle.clip_to(pd).round(),
+        #             pd.width,
+        #             pd.height,
+        #             '\n'
+        #             )
 
