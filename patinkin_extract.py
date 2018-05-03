@@ -17,6 +17,14 @@ class Rectangle:
         self.x_min = left
         self.x_max = right
 
+    def __repr__(self):
+        return '<Rectangle ({}, {}) ({}, {})>'.format(
+                self.x_min,
+                self.y_min,
+                self.x_max,
+                self.y_max,
+                )
+
     @property
     def center(self):
         return (
@@ -34,21 +42,51 @@ class Rectangle:
         (cx, cy) = self.center
         return (cx - self.x_min, cy - self.y_min)
 
-    def scale_from_center(self, amount):
-        c = self.center
+    def scale_from_center(self, w=1.0, h=None):
+        (cx, cy) = self.center
         (tl_x, tl_y) = self.center_to_top_left
         (br_x, br_y) = self.center_to_bottom_right
 
-        tl_x *= amount
-        tl_y *= amount
-        br_x *= amount
-        br_y *= amount
+        w_amount = w
+        h_amount = h or w
 
-        self.x_min = c.x + tl_x
-        self.y_min = c.y + tl_y
-        self.x_max = c.x + br_x
-        self.y_max = c.y + br_y
+        tl_x *= w_amount
+        br_x *= w_amount
 
+        tl_y *= h_amount
+        br_y *= h_amount
+
+        x_min = cx - tl_x
+        y_min = cy - tl_y
+        x_max = cx + br_x
+        y_max = cy + br_y
+
+        return Rectangle(y_min, x_max, y_max, x_min)
+
+    def clip_to(self, patinkin_data):
+        x, y = patinkin_data.width, patinkin_data.height
+        y_min = self.y_min if self.y_min > 0 else 0
+        x_min = self.x_min if self.x_min > 0 else 0
+        y_max = self.y_max if self.y_max < x else x
+        x_max = self.x_max if self.x_max < y else y
+
+        return Rectangle(y_min, x_max, y_max, x_min)
+
+    def round(self):
+        elems = [self.y_min, self.x_max, self.y_max, self.x_min]
+        return Rectangle(*[round(x) for x in elems])
+
+    @property
+    def x(self): return self.x_min
+
+    @property
+    def y(self): return self.y_min
+
+    @property
+    def w(self): return self.x_max - self.x_min
+
+    @property
+    def h(self): return self.y_max - self.y_min
 
 class PatinkinDetection:
     def __init__(self, frame, top, right, bottom, left):
@@ -84,7 +122,7 @@ class PatinkinDetectionGroup:
 
     @property
     def seconds(self):
-        return len(self.detections)
+        return len(self.detections) / float(self.parent.fps)
 
     def time_of(self, detection):
         return detection.frame / float(self.parent.fps)
@@ -161,6 +199,7 @@ class PatinkinDetectionGroup:
             self.min_x
         )
 
+
 class PatinkinData:
     def __init__(self, video_path, tsv_path):
         self.video_path = video_path
@@ -178,7 +217,7 @@ class PatinkinData:
         max_gap_seconds = max(max_gap_seconds, 1.0 / self.fps) # clamp to 1 frame
 
         def should_split(frame_no):
-            result = (frame_no - last_frame_no) / float(self.fps) > max_gap_seconds
+            result = ((frame_no - last_frame_no)) / float(self.fps) > max_gap_seconds
             return result
 
         detection_group = []
@@ -203,6 +242,18 @@ if __name__ == '__main__':
 
     for (vp, tp) in path_pairs:
         pd = PatinkinData(vp, tp)
-        for grp in pd.grouped(0.2):
-            print(grp.time_start_seconds, grp.time_end_seconds, grp.coverage_rectangle)
+        for grp in pd.grouped(8):
+            print(
+                    grp.seconds,
+                    grp.time_start_seconds,
+                    grp.time_end_seconds,
+                    '\n',
+                    grp.coverage_rectangle.scale_from_center(0.25).clip_to(pd).round(),
+                    grp.coverage_rectangle.scale_from_center(8.0).clip_to(pd).round(),
+                    grp.coverage_rectangle.scale_from_center(2.0, 0.5).clip_to(pd).round(),
+                    grp.coverage_rectangle.clip_to(pd).round(),
+                    pd.width,
+                    pd.height,
+                    '\n'
+                    )
 
