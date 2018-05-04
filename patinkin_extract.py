@@ -4,6 +4,7 @@ import sys
 from hashlib import md5
 import subprocess
 import shlex
+import cv2
 
 def midpoint(a, b):
     elems = [a, b]
@@ -45,26 +46,21 @@ class Rectangle:
         (cx, cy) = self.center
         return (self.x_min - cx, self.y_min - cy)
 
+    @property
+    def tl(self):
+        return (self.x_min, self.y_min)
+
+    @property
+    def br(self):
+        return (self.x_max, self.y_max)
+
     def scale_from_center(self, w=1.0, h=None):
         (cx, cy) = self.center
-        (tl_x, tl_y) = self.center_to_top_left
-        (br_x, br_y) = self.center_to_bottom_right
-
-        w_amount = w
-        h_amount = h or w
-
-        tl_x *= w_amount
-        br_x *= w_amount
-
-        tl_y *= h_amount
-        br_y *= h_amount
-
-        x_min = cx + tl_x
-        y_min = cy + tl_y
-        x_max = cx + br_x
-        y_max = cy + br_y
-
-        return Rectangle(x_min, y_min, x_max, y_max)
+        (halfx, halfy) = (self.x_max - cx, self.y_max - cy)
+        (sx, sy) = (w, (h or w))
+        halfx *= sx
+        halfy *= sy
+        return Rectangle(cx - halfx, cy - halfy, cx + halfx, cy + halfy)
 
     def clip_to(self, patinkin_data):
         x, y = patinkin_data.width, patinkin_data.height
@@ -112,11 +108,6 @@ class PatinkinDetection:
         self.frame = frame
         self.rect = Rectangle(left, top, right, bottom)
 
-        self.top = top
-        self.right = right
-        self.bottom = bottom
-        self.left = left
-
     @property
     def center(self):
         return self.rect.center
@@ -144,7 +135,7 @@ class PatinkinDetectionGroup:
         return len(self.detections) / float(self.parent.fps)
 
     def time_of(self, detection):
-        return detection.frame / float(self.parent.fps)
+        return (detection.frame) / float(self.parent.fps)
 
     @property
     def frame_start(self):
@@ -164,6 +155,15 @@ class PatinkinDetectionGroup:
         h, m = divmod(m, 60)
         return "-ss %02d:%02d:%f" % (h, m, s)
 
+    def as_ffmpeg_to(self, pad_seconds=0):
+        secs = self.time_end_seconds + pad_seconds
+        m, s = divmod(secs, 60)
+        h, m = divmod(m, 60)
+        return "-to %02d:%02d:%f" % (h, m, s)
+
+    def as_ffmpeg_skip_filter(self):
+        return "select='gte(n\, {})'".format(self.frame_start)
+
     @property
     def time_start_seconds(self):
         return self.time_of(self.detections[0])
@@ -182,50 +182,32 @@ class PatinkinDetectionGroup:
             y += div * my
         return (int(x), int(y))
 
-    def each_detections_op_prop(self, op, prop):
-        return op([getattr(d, prop) for d in self.detections])
+    def each_detection_rect_get(self, prop):
+        return [getattr(d.rect, prop) for d in self.detections]
 
     @property
-    def min_x(self):
-        return self.each_detections_op_prop(min, 'left')
+    def x_min(self):
+        return min(self.each_detection_rect_get('x_min'))
 
     @property
-    def min_y(self):
-        return self.each_detections_op_prop(min, 'top')
+    def y_min(self):
+        return min(self.each_detection_rect_get('y_min'))
 
     @property
-    def max_x(self):
-        return self.each_detections_op_prop(max, 'right')
+    def x_max(self):
+        return max(self.each_detection_rect_get('x_max'))
 
     @property
-    def max_y(self):
-        return self.each_detections_op_prop(max, 'bottom')
-
-    @property
-    def center_to_top_left(self):
-        div = 1.0 / len(self.detections)
-        xs, ys = zip(*[d.center_to_top_left for d in self.detections])
-        return (
-            sum(xs) * div,
-            sum(ys) * div
-        )
-
-    @property
-    def center_to_bottom_right(self):
-        div = 1.0 / len(self.detections)
-        xs, ys = zip(*[d.center_to_bottom_right for d in self.detections])
-        return (
-            sum(xs) * div,
-            sum(ys) * div
-        )
+    def y_max(self):
+        return max(self.each_detection_rect_get('y_max'))
 
     @property
     def coverage_rectangle(self):
         return Rectangle(
-            self.min_x,
-            self.min_y,
-            self.max_x,
-            self.max_y,
+            self.x_min,
+            self.y_min,
+            self.x_max,
+            self.y_max,
         )
 
 
@@ -261,10 +243,12 @@ class PatinkinData:
         if detection_group:
             yield PatinkinDetectionGroup(self, detection_group)
 
-    def extract(self, group, rect, pad_secs,
-            tmpl="ffmpeg -y {seek} -i {in} -frames:v {frames} -filter:v \"{crop},{scale}\" -c:v libvpx-vp9 -lossless 1 {out}.webm"):
+    def extract_ffmpeg(self, group, rect, pad_secs,
+            tmpl="ffmpeg -y -i {in} {seek} {to} -an -filter:v \"{crop},{scale}\"  {out}.avi"):
+        #tmpl="ffmpeg -y -i {in} {seek} {to} -an -filter:v \"{crop},{scale}\" -c:v libvpx-vp9 -lossless 1 {out}.webm"):
         pad_frames = int(pad_secs * self.fps)
         seek = group.as_ffmpeg_seek(pad_secs)
+        to = group.as_ffmpeg_to(pad_secs)
         crop = rect.as_ffmpeg_crop
 
         h = md5()
@@ -290,6 +274,7 @@ class PatinkinData:
 
         ffmpeg_command = tmpl.format(**{
             'seek': seek,
+            'to': to,
             'crop': crop,
             'in': os.path.abspath(self.video_path),
             'out': out_name,
@@ -302,6 +287,85 @@ class PatinkinData:
         subprocess.run(shlex.split(ffmpeg_command))
         # subprocess.run(['ffmpeg', ffmpeg_command])
 
+    def extract_cv2(self, group, rects):
+        cap = cv2.VideoCapture(self.video_path)
+        cap.set(cv2.CAP_PROP_POS_FRAMES, group.frame_start)
+        cur_frame = group.frame_start
+        while cur_frame <= group.frame_end:
+            cur_frame += 1
+            ret, frame = cap.read()
+
+            if ret:
+                colors = [
+                        (0,0,255),
+                        (0,255,0),
+                        (255,0,0),
+                        (255,255,0),
+                ]
+
+                for i, rect in enumerate(rects):
+                    cv2.rectangle(frame, rect.tl, rect.br, colors[i], 2)
+
+                cv2.imshow('window', frame)
+                if cv2.waitKey(1) & 0xff == ord('q'):
+                    return False
+
+        cap.release()
+        return True
+
+
+    def first_frame(self, group, rect):
+        seek = group.as_ffmpeg_seek(0)
+        skip = group.as_ffmpeg_skip_filter()
+        crop = rect.as_ffmpeg_crop
+
+        h = md5()
+        h.update(self.video_path.encode('utf-8'))
+        h.update(''.join([str(x) for x in rect.size]).encode('utf-8'))
+        h.update(''.join([str(x) for x in [group.frame_start, group.frame_end]]).encode('utf-8'))
+        out_hash = h.hexdigest()[:8]
+        out_name = '_'.join([str(x) for x in [
+            "%06x" % (group.frame_start),
+            "%04d" % (group.frames),
+            out_hash,
+            ]])
+        out_name = './out/{}'.format(out_name)
+
+        tmpl = "ffmpeg -y {seek} -i {in} -filter:v \"{crop}\" -vframes 1 -an {out}.jpg"
+        ffmpeg_command = tmpl.format(**{
+            'seek': seek,
+            'in': os.path.abspath(self.video_path),
+            'out': out_name,
+            'crop': crop,
+            'skip': skip,
+            })
+        print(ffmpeg_command)
+        subprocess.run(shlex.split(ffmpeg_command))
+
+
+def first_frames(data):
+    cap = cv2.VideoCapture(data.video_path)
+
+    for group in data.grouped(1):
+        rect = group.coverage_rectangle
+        cap.set(cv2.CAP_PROP_POS_FRAMES, group.frame_start)
+        cur_frame = group.frame_start
+        while cur_frame < group.frame_end:
+            cur_frame += 1
+            ret, frame = cap.read()
+
+            cv2.rectangle(frame, rect.tl, rect.br, (0, 0, 255), 2)
+            rect2 = rect.scale_from_center(2.0).clip_to(data).round()
+            cv2.rectangle(frame, rect2.tl, rect2.br, (0, 255, 0), 2)
+            rect2 = rect.scale_from_center(1.95, 4.0).clip_to(data).round()
+            cv2.rectangle(frame, rect2.tl, rect2.br, (255, 0, 0), 2)
+
+            cv2.imshow('window', frame)
+            ch = 0xFF & cv2.waitKey(1)
+            if ch == ord('q'):
+                break
+        # print(group.frame_start, group.frames, rect)
+        # pd.first_frame(group, rect)
 
 
 def process_variants(data, max_gaps=[0], scales=[(1.0, 1.0)], pads=[0]):
@@ -314,7 +378,26 @@ def process_variants(data, max_gaps=[0], scales=[(1.0, 1.0)], pads=[0]):
                     rect = rect.scale_from_center(xs, xy)
                     rect = rect.clip_to(data)
                     rect = rect.round()
-                    pd.extract(group, rect, pad)
+                    pd.extract_ffmpeg(group, rect, pad)
+
+
+def process_cv2(data, max_gaps=[0], scales=[(1.0, 1.0)], pads=[0]):
+    for gap in max_gaps:
+        for group in data.grouped(gap):
+            # Collect all rectangle variations
+            g_rect = group.coverage_rectangle
+            rects = []
+            for scale in scales:
+                xs, ys = (scale + scale)[:2]
+                rects.append(
+                    g_rect
+                        .scale_from_center(xs, ys)
+                        .clip_to(data)
+                        .round()
+                )
+
+            if not data.extract_cv2(group, rects):
+                return
 
 
 if __name__ == '__main__':
@@ -324,29 +407,30 @@ if __name__ == '__main__':
     path_pairs = [(p, os.path.splitext(p)[0] + '.tsv') for p in sys.argv[1:]]
     path_pairs = [(p, t) for (p, t) in path_pairs if os.path.exists(p) and os.path.exists(t)]
 
+    print(path_pairs)
     for (vp, tp) in path_pairs:
         pd = PatinkinData(vp, tp)
 
         max_gaps = [
-                0.5,
-                2.0,
+                0,
         ]
 
         scales = [
-                (1.4, 3.0),
-                (3.0, 1.4),
-                (2.0, 1.8),
-                (3.0,),
-                (8.0,),
+                (1.5, 1.3),
+                (2.3,),
+                (1.95, 3.0),
+                (4.0, 5.0),
         ]
 
         pads = [
                 0,
-                0.16,
-                1.0,
+                # 0.5,
+                # 3.0,
         ]
 
-        process_variants(pd, max_gaps, scales, pads)
+        process_cv2(pd, max_gaps, scales, pads)
+        #process_variants(pd, max_gaps, scales, pads)
+        #first_frames(pd)
         # for grp in pd.grouped(8):
         #     print(
         #             grp.seconds,

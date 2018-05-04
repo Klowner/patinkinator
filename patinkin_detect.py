@@ -31,13 +31,11 @@ def process_video(videopath):
     ]) + '\n')
 
     skip_frames = 0
-    frame_no = -1
 
     while cap.isOpened():
 
         matched_location = None
 
-        frame_no += 1
         ret, frame = cap.read()
         if not ret:
             break
@@ -62,18 +60,23 @@ def process_video(videopath):
                 (top, right, bottom, left) = [int(x * (1.0/scale_by)) for x in matched_location]
                 cv2.rectangle(frame, (left, top), (right, bottom), (0, 0, 255), 2)
 
+                cv2_frame_no = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
                 # log: frame, top, right, bottom, left
-                output = '\t'.join([str(x) for x in [frame_no, top, right, bottom, left]])
+                output = '\t'.join([str(x) for x in [cv2_frame_no, top, right, bottom, left]])
                 logfile.write(output + '\n')
                 print(output)
 
-            show = True
+            show = False
             if show:
                 for fl in face_locations:
                     (top, right, bottom, left) = [int(x * (1.0/scale_by)) for x in fl]
                     cv2.rectangle(frame, (left, top), (right, bottom), (0, 255, 0), 2)
 
-                cv2.imshow('frame', frame)
+                if matched_location:
+                    (top, right, bottom, left) = [int(x * (1.0/scale_by)) for x in matched_location]
+                    cv2.rectangle(frame, (left, top), (right, bottom), (0, 0, 255), 2)
+
+                cv2.imshow('frame', cv2.resize(frame, (0, 0), fx=0.25, fy=0.25))
                 if cv2.waitKey(1) & 0xff == ord('q'):
                     break
 
