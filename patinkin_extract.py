@@ -103,6 +103,20 @@ class Rectangle:
     def size(self):
         return (self.w, self.h)
 
+    def get_clamp_scale(self, dim):
+        w, h = self.size
+        return min(dim / w, dim / h)
+
+    def clamp_size(self, dim):
+        s = min(1.0, self.get_clamp_scale(dim))
+        return Rectangle(
+            self.x,
+            self.y,
+            int(self.x + self.w * s),
+            int(self.y + self.h * s)
+        )
+
+
 class PatinkinDetection:
     def __init__(self, frame, top, right, bottom, left):
         self.frame = frame
@@ -223,7 +237,7 @@ class PatinkinData:
             (self.fps, self.width, self.height) = read_line_ints(f.readline())
             self.detections = [PatinkinDetection(*read_line_ints(line)) for line in f]
 
-    def grouped(self, max_gap_seconds=0):
+    def grouped(self, max_gap_seconds=0, min_num_frames=1):
         last_frame_no = 0
         max_gap_seconds = max(max_gap_seconds, 1.0 / self.fps) # clamp to 1 frame
 
@@ -234,7 +248,7 @@ class PatinkinData:
         detection_group = []
         for detection in self.detections:
             if should_split(detection.frame):
-                if len(detection_group) > 1:
+                if len(detection_group) >= min_num_frames:
                     yield PatinkinDetectionGroup(self, detection_group)
                 detection_group = []
             detection_group.append(detection)
@@ -282,34 +296,69 @@ class PatinkinData:
             'scale': scale,
             })
 
-        # print(w, h, scale)
-        print(ffmpeg_command)
         subprocess.run(shlex.split(ffmpeg_command))
-        # subprocess.run(['ffmpeg', ffmpeg_command])
+
 
     def extract_cv2(self, group, rects):
         cap = cv2.VideoCapture(self.video_path)
         cap.set(cv2.CAP_PROP_POS_FRAMES, group.frame_start)
+        source_fps = cap.get(cv2.CAP_PROP_FPS)
         cur_frame = group.frame_start
-        while cur_frame <= group.frame_end:
+
+        max_dim = 800
+        writers = []
+        for rect in rects:
+            # Generate a unique output filename
+            h = md5()
+            h.update(self.video_path.encode('utf-8'))
+            h.update(''.join([str(x) for x in rect.size]).encode('utf-8'))
+            h.update(''.join([str(x) for x in [group.frame_start, group.frame_end]]).encode('utf-8'))
+            out_hash = h.hexdigest()[:8]
+            out_name = '_'.join([str(x) for x in [
+                "%06d" % (group.frame_start),
+                "%04d" % (group.frames),
+                out_hash,
+                ]])
+            out_name = os.path.abspath('./out/{}'.format(out_name))
+
+            (w, h) = rect.clamp_size(max_dim).size
+
+            writer = cv2.VideoWriter(
+                    out_name + '.avi',
+                    cv2.VideoWriter_fourcc(*'MJPG'),
+                    source_fps,
+                    rect.clamp_size(max_dim).size,
+                    True)
+
+            writers.append(writer)
+
+        colors = [
+                (0,0,255),
+                (0,255,0),
+                (255,0,0),
+                (255,255,0),
+                ]
+
+        while cur_frame <= group.frame_end and cap.isOpened():
             cur_frame += 1
             ret, frame = cap.read()
 
             if ret:
-                colors = [
-                        (0,0,255),
-                        (0,255,0),
-                        (255,0,0),
-                        (255,255,0),
-                ]
+                for i, (writer, rect) in enumerate(zip(writers, rects)):
+                    (x, y, w, h) = (rect.x, rect.y, rect.w, rect.h)
+                    s = rect.get_clamp_scale(max_dim)
+                    frame_cropped = frame[y:y+h, x:x+w]
+                    frame_resized = cv2.resize(frame_cropped, (0, 0), fx=s, fy=s)
+                    (w, h) = rect.clamp_size(max_dim).size
+                    writer.write(frame_resized[0:h, 0:w])
 
-                for i, rect in enumerate(rects):
-                    cv2.rectangle(frame, rect.tl, rect.br, colors[i], 2)
+                # cv2.imshow('window', frame)
+                # if cv2.waitKey(1) & 0xff == ord('q'):
+                #     [writer.release() for writer in writers]
+                #     cap.release()
+                #     return False
 
-                cv2.imshow('window', frame)
-                if cv2.waitKey(1) & 0xff == ord('q'):
-                    return False
-
+        [writer.release() for writer in writers]
         cap.release()
         return True
 
@@ -383,7 +432,7 @@ def process_variants(data, max_gaps=[0], scales=[(1.0, 1.0)], pads=[0]):
 
 def process_cv2(data, max_gaps=[0], scales=[(1.0, 1.0)], pads=[0]):
     for gap in max_gaps:
-        for group in data.grouped(gap):
+        for group in data.grouped(gap, 32):
             # Collect all rectangle variations
             g_rect = group.coverage_rectangle
             rects = []
@@ -407,12 +456,13 @@ if __name__ == '__main__':
     path_pairs = [(p, os.path.splitext(p)[0] + '.tsv') for p in sys.argv[1:]]
     path_pairs = [(p, t) for (p, t) in path_pairs if os.path.exists(p) and os.path.exists(t)]
 
-    print(path_pairs)
     for (vp, tp) in path_pairs:
         pd = PatinkinData(vp, tp)
 
         max_gaps = [
                 0,
+                1,
+                2,
         ]
 
         scales = [
@@ -430,19 +480,3 @@ if __name__ == '__main__':
 
         process_cv2(pd, max_gaps, scales, pads)
         #process_variants(pd, max_gaps, scales, pads)
-        #first_frames(pd)
-        # for grp in pd.grouped(8):
-        #     print(
-        #             grp.seconds,
-        #             grp.time_start_seconds,
-        #             grp.time_end_seconds,
-        #             '\n',
-        #             grp.coverage_rectangle.scale_from_center(0.25).clip_to(pd).round(),
-        #             grp.coverage_rectangle.scale_from_center(8.0).clip_to(pd).round(),
-        #             grp.coverage_rectangle.scale_from_center(2.0, 0.5).clip_to(pd).round(),
-        #             grp.coverage_rectangle.clip_to(pd).round(),
-        #             pd.width,
-        #             pd.height,
-        #             '\n'
-        #             )
-
