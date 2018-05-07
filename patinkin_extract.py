@@ -241,20 +241,23 @@ class PatinkinData:
         last_frame_no = 0
         max_gap_seconds = max(max_gap_seconds, 1.0 / self.fps) # clamp to 1 frame
 
+        print('MAX GAP SECONDS', max_gap_seconds)
         def should_split(frame_no):
             result = ((frame_no - last_frame_no)) / float(self.fps) > max_gap_seconds
             return result
 
         detection_group = []
+
         for detection in self.detections:
             if should_split(detection.frame):
                 if len(detection_group) >= min_num_frames:
                     yield PatinkinDetectionGroup(self, detection_group)
                 detection_group = []
+
             detection_group.append(detection)
             last_frame_no = detection.frame
 
-        if detection_group:
+        if len(detection_group) >= min_num_frames:
             yield PatinkinDetectionGroup(self, detection_group)
 
     def extract_ffmpeg(self, group, rect, pad_secs,
@@ -301,7 +304,7 @@ class PatinkinData:
 
     def extract_cv2(self, group, rects):
         cap = cv2.VideoCapture(self.video_path)
-        cap.set(cv2.CAP_PROP_POS_FRAMES, group.frame_start)
+        cap.set(cv2.CAP_PROP_POS_FRAMES, group.frame_start-1)
         source_fps = cap.get(cv2.CAP_PROP_FPS)
         cur_frame = group.frame_start
 
@@ -339,24 +342,26 @@ class PatinkinData:
                 (255,255,0),
                 ]
 
-        while cur_frame <= group.frame_end and cap.isOpened():
+        while cur_frame < group.frame_end and cap.isOpened():
             cur_frame += 1
             ret, frame = cap.read()
-
             if ret:
+                annotated_frame = frame.copy()
                 for i, (writer, rect) in enumerate(zip(writers, rects)):
                     (x, y, w, h) = (rect.x, rect.y, rect.w, rect.h)
-                    s = rect.get_clamp_scale(max_dim)
+                    # cv2.rectangle(annotated_frame, (x, y), (x+w, y+h), (0,0,255), 3) 
                     frame_cropped = frame[y:y+h, x:x+w]
+                    s = rect.get_clamp_scale(max_dim)
                     frame_resized = cv2.resize(frame_cropped, (0, 0), fx=s, fy=s)
                     (w, h) = rect.clamp_size(max_dim).size
                     writer.write(frame_resized[0:h, 0:w])
 
-                # cv2.imshow('window', frame)
+
+                # cv2.imshow('window', annotated_frame)
                 # if cv2.waitKey(1) & 0xff == ord('q'):
                 #     [writer.release() for writer in writers]
                 #     cap.release()
-                #     return False
+                #     return false
 
         [writer.release() for writer in writers]
         cap.release()
